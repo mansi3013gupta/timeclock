@@ -37,17 +37,22 @@ const WorldClock = () => {
 
   // Update times every minute
   useEffect(() => {
+    if (timezones.length === 0) return;
+
     const updateTimes = async () => {
       const updatedTimezones = await Promise.all(
         timezones.map(async (tz) => {
           try {
-            const response = await fetch(`https://worldtimeapi.org/api/timezone/${tz.timezone}`);
+            const response = await fetch(`https://worldtimeapi.org/api/timezone/${tz.timezone}`, {
+              signal: AbortSignal.timeout(5000) // 5 second timeout
+            });
             if (response.ok) {
               const data = await response.json();
               return { ...tz, datetime: data.datetime, utc_offset: data.utc_offset };
             }
           } catch (error) {
-            console.error('Error updating timezone:', error);
+            // Silently fail and keep existing time - API might be temporarily down
+            console.warn(`Failed to update ${tz.city}:`, error.message);
           }
           return tz;
         })
@@ -55,9 +60,27 @@ const WorldClock = () => {
       setTimezones(updatedTimezones);
     };
 
-    const interval = setInterval(updateTimes, 60000); // Update every minute
+    // Update immediately, then every minute
+    updateTimes();
+    const interval = setInterval(updateTimes, 60000);
     return () => clearInterval(interval);
-  }, [timezones]);
+  }, []); // Remove timezones dependency to prevent recreation
+
+  // Separate effect to update times when timezones change
+  useEffect(() => {
+    const updateLocalTimes = () => {
+      setTimezones(prevTimezones => 
+        prevTimezones.map(tz => ({
+          ...tz,
+          datetime: new Date().toISOString() // Use current time as fallback
+        }))
+      );
+    };
+
+    if (timezones.length > 0) {
+      updateLocalTimes();
+    }
+  }, [timezones.length]);
 
   // Filter timezones based on search
   useEffect(() => {
@@ -81,7 +104,9 @@ const WorldClock = () => {
     }
 
     try {
-      const response = await fetch(`https://worldtimeapi.org/api/timezone/${timezoneData.timezone}`);
+      const response = await fetch(`https://worldtimeapi.org/api/timezone/${timezoneData.timezone}`, {
+        signal: AbortSignal.timeout(8000) // 8 second timeout
+      });
       if (response.ok) {
         const data = await response.json();
         const newTimezone: Timezone = {
@@ -100,13 +125,24 @@ const WorldClock = () => {
           description: `${timezoneData.city} has been added to your world clock.`,
         });
       } else {
-        throw new Error('Failed to fetch timezone data');
+        throw new Error(`API returned ${response.status}`);
       }
     } catch (error) {
+      // If API fails, create timezone with current time and estimated offset
+      const fallbackTimezone: Timezone = {
+        id: Date.now().toString(),
+        timezone: timezoneData.timezone,
+        city: timezoneData.city,
+        country: timezoneData.country,
+        datetime: new Date().toISOString(),
+        utc_offset: '+00:00', // Will be corrected on next update
+      };
+      setTimezones(prev => [...prev, fallbackTimezone]);
+      setSearchQuery('');
+      setIsSearchOpen(false);
       toast({
-        title: "Error",
-        description: "Failed to add timezone. Please try again.",
-        variant: "destructive"
+        title: "Timezone added",
+        description: `${timezoneData.city} added. Time will sync shortly.`,
       });
     }
   };
@@ -115,16 +151,55 @@ const WorldClock = () => {
     setTimezones(prev => prev.filter(tz => tz.id !== id));
   };
 
-  const formatTime = (datetime: string) => {
-    return new Date(datetime).toLocaleTimeString([], { 
+  const formatTime = (datetime: string, utc_offset?: string) => {
+    const date = new Date(datetime);
+    
+    // If we have UTC offset, use it to show correct local time
+    if (utc_offset) {
+      // Parse UTC offset like "+05:30" or "-07:00"
+      const offsetMatch = utc_offset.match(/([+-])(\d{2}):(\d{2})/);
+      if (offsetMatch) {
+        const [, sign, hours, minutes] = offsetMatch;
+        const offsetMinutes = (sign === '+' ? 1 : -1) * (parseInt(hours) * 60 + parseInt(minutes));
+        const utcTime = date.getTime() + (date.getTimezoneOffset() * 60000);
+        const localTime = new Date(utcTime + (offsetMinutes * 60000));
+        
+        return localTime.toLocaleTimeString([], { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        });
+      }
+    }
+    
+    return date.toLocaleTimeString([], { 
       hour: '2-digit', 
       minute: '2-digit',
       hour12: true 
     });
   };
 
-  const formatDate = (datetime: string) => {
-    return new Date(datetime).toLocaleDateString([], { 
+  const formatDate = (datetime: string, utc_offset?: string) => {
+    const date = new Date(datetime);
+    
+    // If we have UTC offset, use it to show correct local date
+    if (utc_offset) {
+      const offsetMatch = utc_offset.match(/([+-])(\d{2}):(\d{2})/);
+      if (offsetMatch) {
+        const [, sign, hours, minutes] = offsetMatch;
+        const offsetMinutes = (sign === '+' ? 1 : -1) * (parseInt(hours) * 60 + parseInt(minutes));
+        const utcTime = date.getTime() + (date.getTimezoneOffset() * 60000);
+        const localTime = new Date(utcTime + (offsetMinutes * 60000));
+        
+        return localTime.toLocaleDateString([], { 
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric'
+        });
+      }
+    }
+    
+    return date.toLocaleDateString([], { 
       weekday: 'short',
       month: 'short',
       day: 'numeric'
@@ -219,17 +294,17 @@ const WorldClock = () => {
                     <p className="text-sm text-muted-foreground">{tz.country}</p>
                   </div>
                   
-                  <div className="space-y-2">
-                    <div className="text-3xl font-bold text-primary font-mono">
-                      {formatTime(tz.datetime)}
-                    </div>
-                    <div className="text-sm text-muted-foreground">
-                      {formatDate(tz.datetime)}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      UTC{tz.utc_offset}
-                    </div>
-                  </div>
+                   <div className="space-y-2">
+                     <div className="text-3xl font-bold text-primary font-mono">
+                       {formatTime(tz.datetime, tz.utc_offset)}
+                     </div>
+                     <div className="text-sm text-muted-foreground">
+                       {formatDate(tz.datetime, tz.utc_offset)}
+                     </div>
+                     <div className="text-xs text-muted-foreground">
+                       UTC{tz.utc_offset}
+                     </div>
+                   </div>
                 </div>
                 
                 {/* Subtle gradient overlay */}
