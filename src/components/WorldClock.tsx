@@ -44,16 +44,16 @@ const WorldClock = () => {
         timezones.map(async (tz) => {
           try {
             const response = await fetch(`https://worldtimeapi.org/api/timezone/${tz.timezone}`, {
-              signal: AbortSignal.timeout(5000) // 5 second timeout
+              signal: AbortSignal.timeout(5000)
             });
             if (response.ok) {
               const data = await response.json();
               return { ...tz, datetime: data.datetime, utc_offset: data.utc_offset };
             }
           } catch (error) {
-            // Silently fail and keep existing time - API might be temporarily down
             console.warn(`Failed to update ${tz.city}:`, error.message);
           }
+          // Keep existing data if API fails
           return tz;
         })
       );
@@ -64,23 +64,7 @@ const WorldClock = () => {
     updateTimes();
     const interval = setInterval(updateTimes, 60000);
     return () => clearInterval(interval);
-  }, []); // Remove timezones dependency to prevent recreation
-
-  // Separate effect to update times when timezones change
-  useEffect(() => {
-    const updateLocalTimes = () => {
-      setTimezones(prevTimezones => 
-        prevTimezones.map(tz => ({
-          ...tz,
-          datetime: new Date().toISOString() // Use current time as fallback
-        }))
-      );
-    };
-
-    if (timezones.length > 0) {
-      updateLocalTimes();
-    }
-  }, [timezones.length]);
+  }, [timezones.length]); // Only depend on length to avoid infinite loops
 
   // Filter timezones based on search
   useEffect(() => {
